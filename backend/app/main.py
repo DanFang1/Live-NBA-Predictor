@@ -2,9 +2,11 @@ import os
 import json
 import redis
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.predictor import predict_pts, predict_with_interval
 from app.live import get_live_features, _features_df
@@ -12,22 +14,28 @@ from app.ingestion import fetch_and_cache_all_live
 from nba_api.stats.static import players as nba_players
 
 redis_client = None
+scheduler = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client
+    global redis_client, scheduler
     redis_url = os.environ.get("REDIS_URL")
     if redis_url:
         redis_client = redis.from_url(redis_url, decode_responses=True)
+        redis_client.ping()
         scheduler = BackgroundScheduler()
         scheduler.add_job(
             fetch_and_cache_all_live,
             "interval",
             seconds=60,
             args=[redis_client],
+            max_instances=1,
+            coalesce=True,
         )
         scheduler.start()
     yield
+    if scheduler:
+        scheduler.shutdown(wait=False)
     if redis_client:
         redis_client.close()
 
@@ -53,16 +61,20 @@ class PredictRequest(BaseModel):
     opponent_encoded: int
 
 
-@app.get("/players")
-def list_players():
-    player_ids = _features_df["PLAYER_ID"].unique().tolist()
+@lru_cache(maxsize=1)
+def _player_list():
     result = []
-    for pid in player_ids:
+    for pid in _features_df["PLAYER_ID"].unique().tolist():
         info = nba_players.find_player_by_id(pid)
         if info:
             result.append({"id": int(pid), "name": info["full_name"]})
     result.sort(key=lambda x: x["name"])
     return result
+
+
+@app.get("/players")
+def list_players():
+    return _player_list()
 
 
 @app.get("/health")
@@ -85,7 +97,13 @@ def live_predict(player_id: int):
         result = predict_with_interval(features)
         return {"player_id": player_id, **result}
 
-    cached = redis_client.get(f"live:{player_id}")
+    try:
+        cached = redis_client.get(f"live:{player_id}")
+    except redis.RedisError:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Prediction cache unavailable"},
+        )
     if cached is None:
         return {"error": "Player not found in any live game today"}
     return json.loads(cached)
