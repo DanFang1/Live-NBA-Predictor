@@ -82,6 +82,22 @@ def evaluate(model: XGBRegressor, df_test: pd.DataFrame) -> float:
     return mean_absolute_error(y, preds)
 
 
+def evaluate_interval(model_low, model_high, df_test: pd.DataFrame) -> dict:
+    X = df_test[FEATURES]
+    y = df_test[TARGET].to_numpy()
+    lo, hi = model_low.predict(X), model_high.predict(X)
+    return {
+        "coverage": float(((y >= lo) & (y <= hi)).mean()),
+        "below_low": float((y < lo).mean()),
+        "above_high": float((y > hi).mean()),
+        "mean_width": float((hi - lo).mean()),
+    }
+
+
+def baseline_mae(df_test: pd.DataFrame) -> float:
+    return mean_absolute_error(df_test[TARGET], df_test["last5_avg_pts"])
+
+
 if __name__ == "__main__":
     print("Loading data...")
     df = load_and_prepare(DATA_PATH)
@@ -105,3 +121,9 @@ if __name__ == "__main__":
     model_high = train_quantile(df_train, alpha=0.9)
     joblib.dump(model_high, MODEL_HIGH_PATH)
     print(f"  High bound (p90) saved → {MODEL_HIGH_PATH}")
+
+    stats = evaluate_interval(model_low, model_high, df_test)
+    print(f"  Interval coverage (p10-p90): {stats['coverage']:.1%} (nominal 80%)")
+    print(f"  Below p10: {stats['below_low']:.1%} | Above p90: {stats['above_high']:.1%}")
+    print(f"  Mean interval width: {stats['mean_width']:.1f} pts")
+    print(f"  Baseline MAE (last-5 average): {baseline_mae(df_test):.2f} pts")
