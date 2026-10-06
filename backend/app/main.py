@@ -8,8 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from app.predictor import predict_pts, predict_with_interval
-from app.live import get_live_features, _features_df
+from app.predictor import predict_pts, predict_live
+from app.live import fetch_live_player_stats, get_live_features, _features_df
 from app.ingestion import fetch_and_cache_all_live
 from nba_api.stats.static import players as nba_players
 
@@ -91,10 +91,11 @@ def predict(request: PredictRequest):
 @app.get("/live/{player_id}")
 def live_predict(player_id: int):
     if redis_client is None:
-        features = get_live_features(player_id)
+        stats = fetch_live_player_stats().get(player_id)
+        features = get_live_features(player_id, stats) if stats else None
         if features is None:
             return {"error": "Player not found in any live game today"}
-        result = predict_with_interval(features)
+        result = predict_live(features)
         return {"player_id": player_id, **result}
 
     try:

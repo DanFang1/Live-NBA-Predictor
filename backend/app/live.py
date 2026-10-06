@@ -3,63 +3,76 @@ import os
 from nba_api.live.nba.endpoints import scoreboard, boxscore
 
 FEATURES_PATH = os.path.join(os.path.dirname(__file__), "../data/raw/features.csv")
-_features_df = pd.read_csv(FEATURES_PATH)
+_features_df = pd.read_csv(FEATURES_PATH, parse_dates=["GAME_DATE"])
+_opponent_codes = {
+    team: code for code, team in enumerate(sorted(_features_df["opponent"].unique()))
+}
 
 
-def get_live_game_id(player_id: int) -> str | None:
+def fetch_live_player_stats() -> dict[int, dict]:
     try:
         games = scoreboard.ScoreBoard().games.get_dict()
     except Exception:
-        return None
-    for game in games:
-        for team in ["homeTeam", "awayTeam"]:
-            for player in game[team]["players"]:
-                if player["personId"] == player_id:
-                    return game["gameId"]
-    return None
-
-
-def get_player_live_stats(player_id: int, game_id: str) -> dict | None:
-    box = boxscore.BoxScore(game_id).player_stats.get_dict()
-    for player in box:
-        if player["personId"] == player_id:
-            return {
-                "pts_so_far": player["points"],
-                "min_so_far": float(player["minutesCalculated"].replace("PT", "").replace("M", "")),
-            }
-    return None
-
-
-def get_player_history(player_id: int) -> dict:
-    player_rows = _features_df[_features_df["PLAYER_ID"] == player_id]
-    if player_rows.empty:
         return {}
-    last = player_rows.iloc[-1]
+
+    stats_by_player = {}
+    for game in games:
+        if game["gameStatus"] != 2:
+            continue
+        home = game["homeTeam"]["teamTricode"]
+        away = game["awayTeam"]["teamTricode"]
+        try:
+            box = boxscore.BoxScore(game["gameId"])
+            home_players = box.home_team_player_stats.get_dict()
+            away_players = box.away_team_player_stats.get_dict()
+        except Exception:
+            continue
+        for players, is_home, opponent in (
+            (home_players, 1, away),
+            (away_players, 0, home),
+        ):
+            for p in players:
+                s = p.get("statistics") or {}
+                if "points" not in s or "minutesCalculated" not in s:
+                    continue
+                stats_by_player[p["personId"]] = {
+                    "pts_so_far": s["points"],
+                    "min_so_far": float(
+                        s["minutesCalculated"].replace("PT", "").replace("M", "")
+                    ),
+                    "is_home": is_home,
+                    "opponent": opponent,
+                }
+    return stats_by_player
+
+
+def get_player_history(player_id: int, opponent: str, today=None) -> dict:
+    rows = _features_df[_features_df["PLAYER_ID"] == player_id].sort_values("GAME_DATE")
+    if rows.empty or opponent not in _opponent_codes:
+        return {}
+    today = today if today is not None else pd.Timestamp.today().normalize()
+    recent = rows.tail(5)
+    vs_opponent = rows.loc[rows["opponent"] == opponent, "PTS"]
     return {
-        "last5_avg_pts": last["last5_avg_pts"],
-        "last5_avg_ast": last["last5_avg_ast"],
-        "last5_avg_reb": last["last5_avg_reb"],
-        "last5_avg_min": last["last5_avg_min"],
-        "avg_pts_vs_opponent": last["avg_pts_vs_opponent"],
-        "opponent_encoded": last["opponent_encoded"],
+        "last5_avg_pts": recent["PTS"].mean(),
+        "last5_avg_ast": recent["AST"].mean(),
+        "last5_avg_reb": recent["REB"].mean(),
+        "last5_avg_min": recent["MIN"].mean(),
+        "avg_pts_vs_opponent": (
+            vs_opponent.mean() if len(vs_opponent) else recent["PTS"].mean()
+        ),
+        "opponent_encoded": _opponent_codes[opponent],
+        "days_rest": (today - rows["GAME_DATE"].iloc[-1]).days,
     }
 
 
-def get_live_features(player_id: int) -> dict | None:
-    game_id = get_live_game_id(player_id)
-    if game_id is None:
-        return None
-
-    live_stats = get_player_live_stats(player_id, game_id)
-    if live_stats is None:
-        return None
-
-    history = get_player_history(player_id)
+def get_live_features(player_id: int, live_stats: dict) -> dict | None:
+    history = get_player_history(player_id, live_stats["opponent"])
     if not history:
         return None
-
     return {
         **history,
-        "days_rest": 1,
-        "is_home": 1,
+        "pts_so_far": live_stats["pts_so_far"],
+        "min_so_far": live_stats["min_so_far"],
+        "is_home": live_stats["is_home"],
     }
