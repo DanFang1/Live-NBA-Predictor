@@ -27,7 +27,7 @@ def predict_pts(features: dict) -> float:
 def predict_with_interval(features: dict) -> dict:
     X = pd.DataFrame([features])[FEATURES]
     return {
-        "predicted_pts": round(float(_model.predict(X)[0]), 1),
-        "pts_low": round(float(_model_low.predict(X)[0]), 1),
-        "pts_high": round(float(_model_high.predict(X)[0]), 1),
+        "predicted_pts": round(max(0.0, float(_model.predict(X)[0])), 1),
+        "pts_low": round(max(0.0, float(_model_low.predict(X)[0])), 1),
+        "pts_high": round(max(0.0, float(_model_high.predict(X)[0])), 1),
     }
