@@ -1,5 +1,7 @@
 # Live NBA Stats Predictor
 
+![tests](https://github.com/DanFang1/Live-NBA-Predictor/actions/workflows/test.yml/badge.svg)
+
 Real-time NBA player stat predictor for in-game sports betting decisions. Select any of the top 150 NBA players and get a live predicted final points total with an 80% confidence interval — updated every 60 seconds during live games.
 
 **Use case:** You placed a LeBron over 27.5 pts parlay. At halftime he has 10 points and the predictor shows he's trending toward 22 — you cash out early instead of riding it out.
@@ -9,7 +11,7 @@ Real-time NBA player stat predictor for in-game sports betting decisions. Select
 ## Architecture
 
 ```
-NBA API (stats.nba.com)
+NBA live API (scoreboard + box scores)
        ↑
        │ every 60s
        │
@@ -32,7 +34,9 @@ Next.js API route  (/api/live-stream/[id])
   Browser (React)
 ```
 
-One NBA API call every 60 seconds serves all concurrent users. Each user receives predictions via a persistent SSE connection — no per-user polling.
+One scoreboard call plus one box score per live game each cycle serves all concurrent users. Each user receives predictions via a persistent SSE connection — no per-user polling.
+
+**Live prediction:** final points = points so far + pre-game forecast × fraction of expected minutes remaining. The interval narrows as the game goes on.
 
 ---
 
@@ -40,7 +44,7 @@ One NBA API call every 60 seconds serves all concurrent users. Each user receive
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 15, Tailwind CSS, Recharts |
+| Frontend | Next.js 16, Tailwind CSS, Recharts |
 | Backend | Python, FastAPI, Uvicorn |
 | ML | XGBoost, scikit-learn, pandas |
 | Cache | Redis |
@@ -62,7 +66,7 @@ One NBA API call every 60 seconds serves all concurrent users. Each user receive
 - Days of rest
 - Home/away
 - Opponent team (encoded)
-- Historical average points vs. that specific opponent
+- Historical average points vs. that specific opponent (expanding window, no leakage)
 
 ### Models
 Three XGBoost models trained separately:
@@ -71,8 +75,9 @@ Three XGBoost models trained separately:
 - **Upper bound** — 90th percentile (quantile regression, `alpha=0.9`)
 
 ### Accuracy
-- **MAE: 5.53 points** on held-out test set
-- **78% coverage** — actual final score falls within predicted interval 78% of the time
+Measured on 10,027 held-out games (the latest 20%, 2025-03 to 2026-04):
+- **MAE: 5.5 points** (5.7 for a last-5-average baseline)
+- **78% coverage** of the 80% interval
 
 ---
 
@@ -98,6 +103,13 @@ npm run dev
 
 Requires `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`.
 
+### Tests
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest   # 32 tests, run in CI on every push
+```
+
 ### Retrain the model
 ```bash
 cd backend
@@ -112,7 +124,7 @@ python model/train.py             # trains and saves the 3 models
 ## Key Engineering Decisions
 
 **Redis + APScheduler instead of per-request NBA API calls**
-The NBA stats API rate-limits aggressively. With multiple concurrent users each polling every 30s, rate limiting kicks in quickly. APScheduler runs a single background job every 60s that caches predictions for all live players in Redis. User requests read from cache in microseconds — NBA API call count stays O(1) regardless of user count.
+The NBA API rate-limits aggressively. With multiple concurrent users each polling every 30s, rate limiting kicks in quickly. APScheduler runs a single background job every 60s that caches predictions for all live players in Redis. User requests read from cache in microseconds — NBA API calls scale with the number of live games, not the number of users.
 
 **Server-Sent Events instead of client-side polling**
 The frontend opens one persistent EventSource connection per player selection. The Next.js SSE route polls the backend every 30s and pushes events to the browser. This moves polling off the browser and onto the server, where it can be controlled and observed.
