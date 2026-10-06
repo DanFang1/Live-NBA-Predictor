@@ -4,8 +4,6 @@ Real-time NBA player stat predictor for in-game sports betting decisions. Select
 
 **Use case:** You placed a LeBron over 27.5 pts parlay. At halftime he has 10 points and the predictor shows he's trending toward 22 — you cash out early instead of riding it out.
 
-**Live demo:** https://modest-recreation-production-c492.up.railway.app
-
 ---
 
 ## Architecture
